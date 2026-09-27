@@ -483,24 +483,29 @@ impl ProgressContract {
     }
 
     /// Return all history entries for a player in chronological order (index 1..=N).
-    /// The on-chain layout is now a bounded set of fixed-size `HistoryPage`
-    /// shards rather than one unbounded `HistoryVec` key. The function
-    /// reconstructs the logical history from those pages and keeps the
-    /// per-read/storage cost bounded by the page size instead of the full
-    /// historical count.
+    ///
+    /// ## ⚠️ DEPRECATED — Unbounded Cost
+    ///
+    /// This function reads **every** `HistoryPage` shard for the player, so its
+    /// CPU and storage cost grows linearly with the total history length. The
+    /// previous doc comment incorrectly claimed the cost was bounded by the
+    /// page size; that was true only for the *write* path (`advance_level`),
+    /// not for this full-history read.
+    ///
+    /// Additionally, this function previously extended the TTL of every page it
+    /// touched, making a read call perform writes — an anti-pattern for query
+    /// functions. The TTL extension has been removed.
+    ///
+    /// **Use the bounded alternatives instead:**
+    /// - `get_progress_history_page` for offset-based pagination
+    /// - `get_history_page_with_cursor` for stable cursor-based pagination
+    ///
+    /// This function is retained for backward compatibility but will be removed
+    /// in a future major version. Prefer the paginated readers.
+    ///
     /// Returns an empty Vec if the player has no history.
     pub fn get_progress_history(env: Env, player_id: u64) -> Vec<ProgressEntry> {
-        let history = Self::read_history_pages(&env, player_id);
-        let page_count = history.len().saturating_add(HISTORY_PAGE_SIZE - 1) / HISTORY_PAGE_SIZE;
-        for page_index in 0..page_count {
-            let key = DataKey::HistoryPage(player_id, page_index);
-            if env.storage().persistent().has(&key) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&key, PERSISTENT_TTL_MIN, PERSISTENT_TTL_MAX);
-            }
-        }
-        history
+        Self::read_history_pages(&env, player_id)
     }
 
     /// Paginated history retrieval. Returns entries from `offset+1` to `offset+limit`.
@@ -628,19 +633,94 @@ impl ProgressContract {
     }
 
     /// Query history entries for a player since a given Unix timestamp.
-    /// Returns all entries where `updated_at >= since_timestamp`.
-    /// Rebuilds the logical history from fixed-size `HistoryPage` shards so the
-    /// query remains bounded even as the player's history grows.
-    pub fn get_history_since(env: Env, player_id: u64, since_timestamp: u64) -> Vec<ProgressEntry> {
-        let history = Self::read_history_pages(&env, player_id);
+    ///
+    /// Returns up to `limit` entries where `updated_at >= since_timestamp`,
+    /// starting from the **most recent** entries and working backwards.
+    ///
+    /// ## Bounded Cost
+    ///
+    /// Unlike the previous unbounded implementation, this function scans at most
+    /// `MAX_PAGES_SCAN` pages (10 pages = 80 entries with the current page size)
+    /// starting from the newest page. This bounds CPU and storage cost to a
+    /// fixed maximum regardless of total history length.
+    ///
+    /// `limit` is clamped to 1..=50. If more matching entries exist beyond the
+    /// scanned pages, callers should use `get_history_page_with_cursor` with a
+    /// snapshot taken at the desired timestamp for complete results.
+    ///
+    /// Returns an empty Vec if the player has no history or no entries match.
+    pub fn get_history_since(
+        env: Env,
+        player_id: u64,
+        since_timestamp: u64,
+        limit: u32,
+    ) -> Vec<ProgressEntry> {
+        const MAX_PAGE: u32 = 50;
+        const MAX_PAGES_SCAN: u32 = 10; // bounds cost to ~80 entries max
+
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::HistoryCounter(player_id))
+            .unwrap_or(0u32);
+
+        if count == 0 {
+            return Vec::new(&env);
+        }
+
+        let effective_limit = limit.clamp(1, MAX_PAGE);
+        let total_pages = count.div_ceil(HISTORY_PAGE_SIZE);
+        let pages_to_scan = total_pages.min(MAX_PAGES_SCAN);
+
         let mut result: Vec<ProgressEntry> = Vec::new(&env);
-        for i in 0..history.len() {
-            if let Some(entry) = history.get(i) {
-                if entry.updated_at >= since_timestamp {
-                    result.push_back(entry);
+        let mut scanned = 0u32;
+
+        // Scan from newest page backwards
+        for page_index in (0..total_pages).rev() {
+            if scanned >= pages_to_scan {
+                break;
+            }
+            scanned += 1;
+
+            let page_key = DataKey::HistoryPage(player_id, page_index);
+            let page: Vec<ProgressEntry> = match env.storage().persistent().get(&page_key) {
+                Some(p) => p,
+                None => {
+                    // Reconstruct from individual entries if page missing
+                    let start = page_index * HISTORY_PAGE_SIZE + 1;
+                    let end = (start + HISTORY_PAGE_SIZE - 1).min(count);
+                    let mut reconstructed: Vec<ProgressEntry> = Vec::new(&env);
+                    for idx in start..=end {
+                        if let Some(entry) = env
+                            .storage()
+                            .persistent()
+                            .get(&DataKey::HistoryEntry(player_id, idx))
+                        {
+                            reconstructed.push_back(entry);
+                        }
+                    }
+                    reconstructed
+                }
+            };
+
+            // Page entries are in chronological order (oldest first).
+            // Since we're scanning pages backwards, iterate page entries in reverse.
+            for i in (0..page.len()).rev() {
+                if let Some(entry) = page.get(i) {
+                    if entry.updated_at >= since_timestamp {
+                        result.push_back(entry);
+                        if result.len() >= effective_limit {
+                            return result;
+                        }
+                    } else {
+                        // Since we're going backwards in time and entries within
+                        // a page are chronological, we can stop scanning this page.
+                        break;
+                    }
                 }
             }
         }
+
         result
     }
 
@@ -677,11 +757,17 @@ impl ProgressContract {
     /// (1-indexed, matching `get_history_entry`) that verifies against the
     /// player's *current* `get_progress_root`.
     ///
-    /// This is a read-only convenience for callers who do not want to
-    /// re-implement the tree construction off-chain (an indexer, a test, a
-    /// dispute-resolution UI); it recomputes the proof on demand from
-    /// `HistoryVec` rather than storing it, since storing a proof per entry
-    /// would require rewriting every prior entry's proof on each append.
+    /// ## ⚠️ Unbounded Cost
+    ///
+    /// This function reads **every** `HistoryPage` shard for the player and
+    /// recomputes all leaf hashes to build the Merkle proof path. Its CPU and
+    /// storage cost grows linearly with the total history length. For players
+    /// with long histories, this can be expensive.
+    ///
+    /// For production use with large histories, consider computing proofs
+    /// off-chain (e.g., in an indexer) using `get_progress_history_page` or
+    /// `get_history_page_with_cursor` to fetch pages incrementally.
+    ///
     /// `verify_history_proof` does not depend on this function — it accepts
     /// any structurally valid proof from any source.
     pub fn get_history_proof(

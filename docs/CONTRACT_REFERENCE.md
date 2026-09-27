@@ -2643,28 +2643,28 @@ stellar contract invoke --id $PROGRESS_CONTRACT_ID \
 
 #### `get_progress_history(player_id: u64) -> Vec<ProgressEntry>`
 
-Return all history entries for a player in chronological order. The contract now
-stores the full logical history as bounded `HistoryPage(player_id, page_index)`
-shards (fixed-size pages, not one ever-growing `HistoryVec` key) and
-reconstructs the chronological list at read time. This keeps per-entry storage
-cost bounded even if a player experiences many resets or repeated re-entries.
+Return all history entries for a player in chronological order.
+
+**⚠️ DEPRECATED — Unbounded Cost**
+
+This function reads **every** `HistoryPage` shard for the player, so its CPU
+and storage cost grows linearly with the total history length. The previous
+documentation incorrectly claimed the cost was bounded by the page size; that
+was true only for the *write* path (`advance_level`), not for this full-history
+read.
+
+Additionally, this function previously extended the TTL of every page it
+touched, making a read call perform writes — an anti-pattern for query
+functions. The TTL extension has been removed.
+
+**Use the bounded alternatives instead:**
+- `get_progress_history_page` for offset-based pagination
+- `get_history_page_with_cursor` for stable cursor-based pagination
+
+This function is retained for backward compatibility but will be removed in a
+future major version. Prefer the paginated readers.
+
 Returns an empty `Vec` for unknown player IDs (default-on-absent, no error).
-Because an empty result is returned both for a registered player with no history
-and for an unknown `player_id`, verify existence against the registration
-contract (`registration.get_player(player_id)`) before interpreting the empty
-list, and distinguish "no level changes" from "player unknown" via that call.
-
-**Gas trade-off**: each page is a small, fixed-size `Vec<ProgressEntry>`, so the
-read cost scales with the number of pages touched rather than the total lifetime
-entry count in a single unbounded storage key. The logical history can still be
-reconstructed for Merkle commitments and auditing without exposing an
-unbounded per-player storage blob.
-
-**Migration note**: the legacy `HistoryVec(player_id)` key remains readable for
-compatibility with older deployments and recovery tooling, but new writes append
-to `HistoryPage` shards instead of extending the legacy vec. Existing data can
-still be recovered by concatenating the `HistoryEntry(player_id, i)` records in
-index order until a one-time migration is complete.
 
 | | |
 |---|---|
@@ -2836,16 +2836,28 @@ stellar contract invoke --id $PROGRESS_CONTRACT_ID \
 
 ---
 
-#### `get_history_since(player_id: u64, since_timestamp: u64) -> Vec<ProgressEntry>`
+#### `get_history_since(player_id: u64, since_timestamp: u64, limit: u32) -> Vec<ProgressEntry>`
 
-Return all of a player's history entries with `updated_at >= since_timestamp`
-(Unix seconds). Useful for indexers polling for changes since their last sync
-point instead of re-reading the full history.
+Return up to `limit` history entries for a player with `updated_at >=
+since_timestamp` (Unix seconds), starting from the **most recent** entries and
+working backwards.
 
-Returns an empty `Vec` for an unknown `player_id` (default-on-absent, no error)
-— the same empty result a registered player with no matching entries yields —
-so this getter does not assert existence. Confirm the player against the
-registration contract (`registration.get_player(player_id)`) when the empty
+**Bounded Cost**
+
+Unlike the previous unbounded implementation, this function scans at most
+`MAX_PAGES_SCAN` pages (10 pages = 80 entries with the current page size)
+starting from the newest page. This bounds CPU and storage cost to a fixed
+maximum regardless of total history length.
+
+`limit` is clamped to 1..=50. If more matching entries exist beyond the scanned
+pages, callers should use `get_history_page_with_cursor` with a snapshot taken
+at the desired timestamp for complete results.
+
+Returns an empty `Vec` if the player has no history or no entries match. An
+empty result is also returned for an unknown `player_id` (default-on-absent, no
+error) — the same empty result a registered player with no matching entries
+yields — so this getter does not assert existence. Confirm the player against
+the registration contract (`registration.get_player(player_id)`) when the empty
 result's cause matters.
 
 | | |
@@ -2855,7 +2867,7 @@ result's cause matters.
 
 ```bash
 stellar contract invoke --id $PROGRESS_CONTRACT_ID \
-  -- get_history_since --player_id 1 --since_timestamp 1700000000
+  -- get_history_since --player_id 1 --since_timestamp 1700000000 --limit 50
 ```
 
 ---
@@ -2936,6 +2948,17 @@ otherwise have to reimplement the tree construction off-chain — recomputed
 on demand, not stored (storing a proof per entry would require rewriting
 every prior entry's proof on each append). `verify_history_proof` accepts
 proofs from any source, not only this function.
+
+**⚠️ Unbounded Cost**
+
+This function reads **every** `HistoryPage` shard for the player and
+recomputes all leaf hashes to build the Merkle proof path. Its CPU and
+storage cost grows linearly with the total history length. For players
+with long histories, this can be expensive.
+
+For production use with large histories, consider computing proofs
+off-chain (e.g., in an indexer) using `get_progress_history_page` or
+`get_history_page_with_cursor` to fetch pages incrementally.
 
 | | |
 |---|---|

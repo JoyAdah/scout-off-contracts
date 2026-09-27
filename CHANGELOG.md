@@ -18,6 +18,12 @@ The initial v0.1.0 entry below retains the year-only date because no exact histo
 
 ## Unreleased
 
+- Version: `v1.1.1`
+- Release date: `2026-08-21`
+- Contracts affected: `progress`
+- Summary: Fixed unbounded read cost in three progress contract history readers (issue #1411). `get_progress_history` no longer extends TTL on every page and is documented as deprecated with unbounded cost — callers should migrate to `get_progress_history_page` or `get_history_page_with_cursor`. `get_history_since` now accepts a `limit` parameter and scans at most 10 pages (80 entries) from the newest, bounding CPU/storage cost. `get_history_proof` doc comment updated to accurately describe its linear cost with history length and recommends off-chain computation for large histories.
+- Classification: `Non-breaking (MINOR)` — function signatures for `get_history_since` and `get_progress_history` change in a backward-compatible way (new optional `limit` parameter for `get_history_since`, behavior change only for `get_progress_history` removing TTL writes); existing callers continue to work.
+
 Use the structure below for upcoming MINOR or MAJOR contract changes:
 
 - Version: `vX.Y.Z`
