@@ -21,6 +21,8 @@ pub const FEE_CONFIG_PROPOSED: &str = "fee_config_proposed";
 pub const FEE_CONFIG_UPDATED: &str = "fee_config_updated";
 pub const FEE_CONFIG_DELAY_BYPASSED: &str = "fee_config_delay_bypassed";
 pub const WIRING_UPDATED: &str = "wiring_updated";
+pub const MIGRATION_WINDOW_OPENED: &str = "migration_window_opened";
+pub const MIGRATION_WINDOW_CLOSED: &str = "migration_window_closed";
 
 /// topics: (event_name, admin)  data: admin
 pub fn contract_initialized(env: &Env, admin: &Address) {
@@ -356,5 +358,19 @@ pub fn evidence_access_revoked(env: &Env, player_id: u64, scout: &Address, admin
     env.events().publish(
         (Symbol::new(env, EVIDENCE_ACCESS_REVOKED), scout.clone()),
         (player_id, admin.clone()),
+    );
+}
+
+pub fn migration_window_opened(env: &Env, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, MIGRATION_WINDOW_OPENED), admin.clone()),
+        (),
+    );
+}
+
+pub fn migration_window_closed(env: &Env, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, MIGRATION_WINDOW_CLOSED), admin.clone()),
+        (),
     );
 }

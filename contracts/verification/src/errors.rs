@@ -150,6 +150,11 @@ pub enum VerificationError {
     /// `tally_dispute` called before the voting window closes and the
     /// required quorum of votes has not yet been reached.
     QuorumNotReached = 43,
+
+    // ── Migration ──
+    /// Migration window has been permanently closed and cannot be reopened.
+    /// Deploy a new contract if a second migration is required (see MIGRATION_GAPS.md).
+    MigrationWindowSealed = 44,
 }
 
 impl AdminError for VerificationError {

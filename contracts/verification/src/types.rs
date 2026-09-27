@@ -441,6 +441,11 @@ pub enum DataKey {
     /// functions on this contract check this flag before writing any state.
     /// Cleared by `close_migration_window`. Stored in instance storage.
     MigrationActive,
+    /// Irreversible flag set by `close_migration_window` after the window
+    /// has been closed once. If present (true), `open_migration_window`
+    /// will return `MigrationWindowSealed` error. This ensures the
+    /// migration window can only be opened once per contract deployment.
+    MigrationWindowSealed,
 
     // ── Wiring epochs (issue #1041) ──
     /// Re-wiring epoch for `DataKey::ProgressContract`, bumped by every

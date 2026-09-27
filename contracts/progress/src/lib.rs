@@ -778,11 +778,15 @@ impl ProgressContract {
     /// instance storage so it is visible in `health()` and readable by any
     /// monitoring tool without a TTL concern.
     pub fn open_migration_window(env: Env) -> Result<(), ProgressError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::MigrationWindowSealed).unwrap_or(false) {
+            return Err(ProgressError::MigrationWindowSealed);
+        }
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &true);
+        events::migration_window_opened(&env, &admin);
         Ok(())
     }
 
@@ -792,11 +796,15 @@ impl ProgressContract {
     /// `MigrationNotActive`.  This is the irreversibility gate: once the
     /// new contract is live, no further historical state can be injected.
     pub fn close_migration_window(env: Env) -> Result<(), ProgressError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationWindowSealed, &true);
+        events::migration_window_closed(&env, &admin);
         Ok(())
     }
 
@@ -967,10 +975,16 @@ impl ProgressContract {
             .instance()
             .get::<DataKey, bool>(&DataKey::Paused)
             .unwrap_or(false);
+        let migration_window_open = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MigrationActive)
+            .unwrap_or(false);
         ContractHealth {
             initialized,
             paused,
             pay_to_contact_paused: false,
+            migration_window_open,
         }
     }
 

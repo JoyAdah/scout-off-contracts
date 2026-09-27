@@ -2243,21 +2243,29 @@ impl ScoutAccessContract {
     /// `admin_seed_trial_offer`, and `admin_seed_auto_renew` may be called to
     /// replay historical records.  Close immediately after replay.
     pub fn open_migration_window(env: Env) -> Result<(), ScoutAccessError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::MigrationWindowSealed).unwrap_or(false) {
+            return Err(ScoutAccessError::MigrationWindowSealed);
+        }
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &true);
+        events::migration_window_opened(&env, &admin);
         Ok(())
     }
 
     /// Close the migration window.  Admin-only.
     pub fn close_migration_window(env: Env) -> Result<(), ScoutAccessError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationWindowSealed, &true);
+        events::migration_window_closed(&env, &admin);
         Ok(())
     }
 
@@ -2267,6 +2275,36 @@ impl ScoutAccessContract {
             .instance()
             .get::<DataKey, bool>(&DataKey::MigrationActive)
             .unwrap_or(false)
+    }
+
+    /// Returns the contract health status including migration window state.
+    pub fn health(env: Env) -> ContractHealth {
+        let initialized = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Initialized)
+            .unwrap_or(false);
+        let paused = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::Paused)
+            .unwrap_or(false);
+        let pay_to_contact_paused = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::PausedPayToContact)
+            .unwrap_or(false);
+        let migration_window_open = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MigrationActive)
+            .unwrap_or(false);
+        ContractHealth {
+            initialized,
+            paused,
+            pay_to_contact_paused,
+            migration_window_open,
+        }
     }
 
     // -------------------------------------------------------------------------

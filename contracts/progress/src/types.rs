@@ -138,6 +138,11 @@ pub enum DataKey {
     /// Cleared by `close_migration_window`. Stored in instance storage so it
     /// is immediately visible and requires no TTL management.
     MigrationActive,
+    /// Irreversible flag set by `close_migration_window` after the window
+    /// has been closed once. If present (true), `open_migration_window`
+    /// will return `MigrationWindowSealed` error. This ensures the
+    /// migration window can only be opened once per contract deployment.
+    MigrationWindowSealed,
     /// Re-wiring epoch for [`DataKey::RegistrationContract`], bumped by
     /// every `set_registration_contract` call. See
     /// `scoutchain_shared_types::WiringLink` and

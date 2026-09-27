@@ -7,7 +7,7 @@ use scoutchain_verification::{
     Milestone, MilestoneDispute, VerificationContract, VerificationContractClient,
     VerificationError,
 };
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use soroban_sdk::{testutils::Address as _, Address, Env, String, Symbol};
 
 const VALID_CID_1: &str = "QmPK1s3pNYLi9ERiq3BDxKa4XosgWwFRQUydHUtz4YgpqB";
 const VALID_CID_2: &str = "QmT5NvUtoM5nWFfrQdVrFtvgfKFmG7Bze9R7WB7Wz2rFQR";
@@ -412,4 +412,42 @@ fn test_verification_seed_rejected_after_window_close() {
     let ms2 = make_milestone(&env, 1, &validator, VALID_CID_2);
     let result = client.try_admin_seed_milestone(&1u64, &2u32, &ms2, &validator);
     assert_eq!(result, Err(Ok(VerificationError::MigrationNotActive)));
+}
+
+// ── Reopening after close fails with MigrationWindowSealed (Issue #1410) ─────────
+
+#[test]
+fn test_reopening_after_close_fails() {
+    let (_env, client, _admin) = setup();
+    client.open_migration_window();
+    assert!(client.health().migration_window_open);
+
+    client.close_migration_window();
+    assert!(!client.health().migration_window_open);
+
+    let res = client.try_open_migration_window();
+    assert_eq!(res, Err(Ok(VerificationError::MigrationWindowSealed)));
+}
+
+#[test]
+fn test_migration_window_events_emitted() {
+    let (env, client, _admin) = setup();
+    
+    // Open migration window - should emit event
+    client.open_migration_window();
+    let events = env.events().all();
+    let open_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_opened"
+    });
+    assert_eq!(open_events.count(), 1, "migration_window_opened event must be emitted");
+    
+    // Close migration window - should emit event
+    client.close_migration_window();
+    let events = env.events().all();
+    let close_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_closed"
+    });
+    assert_eq!(close_events.count(), 1, "migration_window_closed event must be emitted");
 }

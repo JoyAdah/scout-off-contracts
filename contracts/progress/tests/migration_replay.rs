@@ -5,7 +5,7 @@
 
 use scoutchain_progress::{ProgressContract, ProgressContractClient, ProgressEntry, ProgressError};
 use scoutchain_shared_types::ProgressLevel;
-use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Symbol};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -404,4 +404,43 @@ fn test_idempotent_replay_with_root_check_on_existing() {
     let wrong: BytesN<32> = BytesN::from_array(&env, &[0xffu8; 32]);
     let r2 = client.try_admin_seed_history(&player_id, &1u32, &entry, &Some(wrong));
     assert_eq!(r2, Err(Ok(ProgressError::MerkleRootMismatch)));
+}
+
+// ── 17. Reopening after close fails with MigrationWindowSealed ──────────────────
+// Issue #1410: Migration window must be one-time only.
+
+#[test]
+fn test_reopening_after_close_fails() {
+    let (_env, client, _admin) = setup();
+    client.open_migration_window();
+    assert!(client.health().migration_window_open);
+
+    client.close_migration_window();
+    assert!(!client.health().migration_window_open);
+
+    let res = client.try_open_migration_window();
+    assert_eq!(res, Err(Ok(ProgressError::MigrationWindowSealed)));
+}
+
+#[test]
+fn test_migration_window_events_emitted() {
+    let (env, client, admin) = setup();
+    
+    // Open migration window - should emit event
+    client.open_migration_window();
+    let events = env.events().all();
+    let open_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_opened"
+    });
+    assert_eq!(open_events.count(), 1, "migration_window_opened event must be emitted");
+    
+    // Close migration window - should emit event
+    client.close_migration_window();
+    let events = env.events().all();
+    let close_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_closed"
+    });
+    assert_eq!(close_events.count(), 1, "migration_window_closed event must be emitted");
 }

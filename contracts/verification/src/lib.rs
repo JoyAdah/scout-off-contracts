@@ -2607,21 +2607,29 @@ impl VerificationContract {
     /// called to replay historical records.  Close immediately after replay
     /// with `close_migration_window`.
     pub fn open_migration_window(env: Env) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
+        if env.storage().instance().get::<DataKey, bool>(&DataKey::MigrationWindowSealed).unwrap_or(false) {
+            return Err(VerificationError::MigrationWindowSealed);
+        }
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &true);
+        events::migration_window_opened(&env, &admin);
         Ok(())
     }
 
     /// Close the migration window.  Admin-only.
     pub fn close_migration_window(env: Env) -> Result<(), VerificationError> {
-        require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
+        let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
         Self::require_initialized(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MigrationActive, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::MigrationWindowSealed, &true);
+        events::migration_window_closed(&env, &admin);
         Ok(())
     }
 
@@ -2940,10 +2948,16 @@ impl VerificationContract {
             .instance()
             .get::<DataKey, bool>(&DataKey::Paused)
             .unwrap_or(false);
+        let migration_window_open = env
+            .storage()
+            .instance()
+            .get::<DataKey, bool>(&DataKey::MigrationActive)
+            .unwrap_or(false);
         ContractHealth {
             initialized,
             paused,
             pay_to_contact_paused: false,
+            migration_window_open,
         }
     }
 

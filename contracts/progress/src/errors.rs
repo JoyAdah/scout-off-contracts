@@ -55,6 +55,9 @@ pub enum ProgressError {
     /// archival grace period has fully elapsed (evicted, not merely archived)
     /// and is unrecoverable.
     PlayerLevelRecordEvicted = 15,
+    /// Migration window has been permanently closed and cannot be reopened.
+    /// Deploy a new contract if a second migration is required (see MIGRATION_GAPS.md).
+    MigrationWindowSealed = 16,
 }
 
 impl AdminError for ProgressError {

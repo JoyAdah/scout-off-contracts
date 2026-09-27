@@ -134,6 +134,9 @@ pub enum ScoutAccessError {
     /// `admin_revoke_evidence_access` targeted a (player_id, scout) pair for
     /// which no `EvidenceAccessGrant` record exists.
     GrantNotFound = 38,
+    /// Migration window has been permanently closed and cannot be reopened.
+    /// Deploy a new contract if a second migration is required (see MIGRATION_GAPS.md).
+    MigrationWindowSealed = 39,
 }
 
 impl AdminError for ScoutAccessError {

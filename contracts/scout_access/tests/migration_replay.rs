@@ -11,7 +11,7 @@ use scoutchain_scout_access::{
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Env, String,
+    Address, Env, String, Symbol,
 };
 
 fn make_fee_config() -> FeeConfig {
@@ -535,4 +535,42 @@ fn test_full_migration_sequence_parity() {
     // Close the migration window.
     client.close_migration_window();
     assert!(!client.migration_window_is_open());
+}
+
+// ── Reopening after close fails with MigrationWindowSealed (Issue #1410) ─────────
+
+#[test]
+fn test_reopening_after_close_fails() {
+    let (_env, client, _admin) = setup();
+    client.open_migration_window();
+    assert!(client.health().migration_window_open);
+
+    client.close_migration_window();
+    assert!(!client.health().migration_window_open);
+
+    let res = client.try_open_migration_window();
+    assert_eq!(res, Err(Ok(ScoutAccessError::MigrationWindowSealed)));
+}
+
+#[test]
+fn test_migration_window_events_emitted() {
+    let (env, client, _admin) = setup();
+    
+    // Open migration window - should emit event
+    client.open_migration_window();
+    let events = env.events().all();
+    let open_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_opened"
+    });
+    assert_eq!(open_events.count(), 1, "migration_window_opened event must be emitted");
+    
+    // Close migration window - should emit event
+    client.close_migration_window();
+    let events = env.events().all();
+    let close_events = events.filter_by_contract(&client.address).filter(|e| {
+        let topic = e.topic;
+        topic.get_unchecked::<Symbol>(0).to_string() == "migration_window_closed"
+    });
+    assert_eq!(close_events.count(), 1, "migration_window_closed event must be emitted");
 }

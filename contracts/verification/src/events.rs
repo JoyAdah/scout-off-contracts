@@ -22,6 +22,8 @@ pub const VALIDATOR_PENDING_VOTES_INVALIDATED: &str = "validator_votes_invalidat
 pub const WIRING_UPDATED: &str = "wiring_updated";
 pub const DISPUTE_VOTE_CAST: &str = "dispute_vote_cast";
 pub const DISPUTE_TALLIED: &str = "dispute_tallied";
+pub const MIGRATION_WINDOW_OPENED: &str = "migration_window_opened";
+pub const MIGRATION_WINDOW_CLOSED: &str = "migration_window_closed";
 
 /// topics: (event_name, old_admin)  data: new_admin
 pub fn admin_transfer_proposed(env: &Env, old_admin: &Address, new_admin: &Address) {
@@ -404,5 +406,19 @@ pub fn dispute_tallied(
     env.events().publish(
         (Symbol::new(env, DISPUTE_TALLIED), player_id),
         (milestone_index, upheld, votes_for, votes_against),
+    );
+}
+
+pub fn migration_window_opened(env: &Env, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, MIGRATION_WINDOW_OPENED), admin.clone()),
+        (),
+    );
+}
+
+pub fn migration_window_closed(env: &Env, admin: &Address) {
+    env.events().publish(
+        (Symbol::new(env, MIGRATION_WINDOW_CLOSED), admin.clone()),
+        (),
     );
 }
