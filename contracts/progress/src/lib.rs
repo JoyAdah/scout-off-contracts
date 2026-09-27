@@ -250,6 +250,14 @@ impl ProgressContract {
         Self::require_initialized(&env)?;
         let admin = require_admin(&env, &DataKey::Admin, ADMIN_BUMP_LEDGERS)?;
 
+        // Require a wired registration contract to validate player existence.
+        // If not configured, fail closed with a typed error.
+        let reg_contract: Option<Address> = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::RegistrationContract);
+        let reg_contract = reg_contract.ok_or(ProgressError::RegistrationNotConfigured)?;
+
         let old_level = Self::get_current_level(&env, player_id);
         Self::record_progress_entry(
             &env,
@@ -268,17 +276,14 @@ impl ProgressContract {
             PERSISTENT_TTL_MAX,
         );
 
-        // Sync to registration contract if set
-        if let Some(reg_contract) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::RegistrationContract)
-        {
-            let reg_client = registration_contract::Client::new(&env, &reg_contract);
-            match reg_client.try_set_player_level(&player_id, &target_level) {
-                Ok(Ok(())) => {}
-                _ => return Err(ProgressError::RegistrationCallFailed),
+        // Sync to registration contract (wired, so guaranteed to be Some)
+        let reg_client = registration_contract::Client::new(&env, &reg_contract);
+        match reg_client.try_set_player_level(&player_id, &target_level) {
+            Ok(Ok(())) => {}
+            Ok(Err(registration_contract::RegClientError::PlayerNotFound)) => {
+                return Err(ProgressError::PlayerNotRegistered);
             }
+            _ => return Err(ProgressError::RegistrationCallFailed),
         }
 
         events::player_level_reset(&env, &admin, player_id, &old_level, &target_level);
@@ -352,6 +357,14 @@ impl ProgressContract {
             }
         }
 
+        // Require a wired registration contract to validate player existence.
+        // If not configured, fail closed with a typed error.
+        let reg_contract: Option<Address> = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::RegistrationContract);
+        let reg_contract = reg_contract.ok_or(ProgressError::RegistrationNotConfigured)?;
+
         let current = Self::get_current_level(&env, player_id);
         let new_level = current.next().ok_or(ProgressError::AlreadyAtMaxLevel)?;
 
@@ -371,17 +384,14 @@ impl ProgressContract {
             .persistent()
             .set(&DataKey::PlayerLevel(player_id), &new_level);
 
-        // Sync to registration contract if set
-        if let Some(reg_contract) = env
-            .storage()
-            .instance()
-            .get::<DataKey, Address>(&DataKey::RegistrationContract)
-        {
-            let reg_client = registration_contract::Client::new(&env, &reg_contract);
-            match reg_client.try_set_player_level(&player_id, &new_level) {
-                Ok(Ok(())) => {}
-                _ => return Err(ProgressError::RegistrationCallFailed),
+        // Sync to registration contract (wired, so this is guaranteed to be Some)
+        let reg_client = registration_contract::Client::new(&env, &reg_contract);
+        match reg_client.try_set_player_level(&player_id, &new_level) {
+            Ok(Ok(())) => {}
+            Ok(Err(registration_contract::RegClientError::PlayerNotFound)) => {
+                return Err(ProgressError::PlayerNotRegistered);
             }
+            _ => return Err(ProgressError::RegistrationCallFailed),
         }
 
         // All storage writes are complete — emit the event last.

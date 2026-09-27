@@ -55,6 +55,11 @@ pub enum ProgressError {
     /// archival grace period has fully elapsed (evicted, not merely archived)
     /// and is unrecoverable.
     PlayerLevelRecordEvicted = 15,
+    /// Registration contract is not wired; level changes require a wired
+    /// registration contract to validate player existence.
+    RegistrationNotConfigured = 16,
+    /// Player ID does not exist in the wired registration contract.
+    PlayerNotRegistered = 17,
 }
 
 impl AdminError for ProgressError {

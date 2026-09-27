@@ -47,8 +47,10 @@ pub struct ProgressEntry {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProgressWiringState {
     /// Address of the registration contract, if set via
-    /// `set_registration_contract`. Required for `advance_level` to validate
-    /// player existence via the registration contract.
+    /// `set_registration_contract`. Required for `advance_level` and
+    /// `reset_player_level` to validate player existence via the
+    /// registration contract (fails closed with `RegistrationNotConfigured`
+    /// if unwired).
     pub registration_contract: Option<Address>,
     /// Address of the verification contract, if set via
     /// `set_verification_contract`. Only this address may call `advance_level`
