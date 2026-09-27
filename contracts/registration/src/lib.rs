@@ -80,6 +80,116 @@ const DEFAULT_REG_COOLDOWN_SECS: u64 = 86_400;
 
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Canonicalize a region string to ISO 3166-1 alpha-2 + optional ISO 3166-2 subdivision.
+/// Format: `[A-Z]{2}(-[A-Z0-9]{1,3})?` (e.g., "NG", "NG-LA", "US-CA").
+/// - Trims whitespace
+/// - Uppercases the string
+/// - Validates against the canonical format
+fn canonicalize_region(env: &Env, region: &String) -> Result<String, ScoutChainError> {
+    let trimmed = region.trim();
+    let upper = trimmed.to_uppercase();
+
+    // Validate format: ISO 3166-1 alpha-2 (2 letters) + optional ISO 3166-2 subdivision (1-3 alphanumeric)
+    let bytes = upper.as_bytes();
+    if bytes.len() < 2 || bytes.len() > 6 {
+        // Min: "AA" (2), Max: "AA-AAA" (6)
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    // First two chars must be A-Z
+    if !bytes[0].is_ascii_uppercase() || !bytes[1].is_ascii_uppercase() {
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    // If there's a subdivision, it must start with '-' and have 1-3 alphanumeric chars
+    if bytes.len() > 2 {
+        if bytes[2] != b'-' {
+            return Err(ScoutChainError::InvalidInput);
+        }
+        if bytes.len() < 4 || bytes.len() > 6 {
+            return Err(ScoutChainError::InvalidInput);
+        }
+        for &b in &bytes[3..] {
+            if !b.is_ascii_alphanumeric() {
+                return Err(ScoutChainError::InvalidInput);
+            }
+        }
+    }
+
+    Ok(String::from_str(env, core::str::from_utf8(bytes).unwrap()))
+}
+
+/// Canonicalize a position string to a standard format.
+/// - Trims whitespace
+/// - Uppercases the string
+/// - Validates against known position codes (GK, CB, FB, DM, CM, AM, W, ST, etc.)
+fn canonicalize_position(env: &Env, position: &String) -> Result<String, ScoutChainError> {
+    let trimmed = position.trim();
+    let upper = trimmed.to_uppercase();
+
+    let bytes = upper.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_STRING_LEN as usize {
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    // Validate against known position codes (case-insensitive match)
+    // Common football positions: GK, CB, LB, RB, FB, DM, CM, AM, LM, RM, LW, RW, W, ST, CF
+    let valid_positions = [
+        b"GK", b"CB", b"LB", b"RB", b"FB", b"DM", b"CM", b"AM", b"LM", b"RM",
+        b"LW", b"RW", b"W", b"ST", b"CF", b"SS", b"WB", b"SW",
+    ];
+
+    let mut valid = false;
+    for pos in valid_positions {
+        if bytes == pos {
+            valid = true;
+            break;
+        }
+    }
+
+    if !valid {
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    Ok(String::from_str(env, core::str::from_utf8(bytes).unwrap()))
+}
+
+/// Canonicalize a nationality string to ISO 3166-1 alpha-2.
+/// - Trims whitespace
+/// - Uppercases the string
+/// - Validates exactly 2 uppercase letters
+fn canonicalize_nationality(env: &Env, nationality: &String) -> Result<String, ScoutChainError> {
+    let trimmed = nationality.trim();
+    let upper = trimmed.to_uppercase();
+
+    let bytes = upper.as_bytes();
+    if bytes.len() != 2 {
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    if !bytes[0].is_ascii_uppercase() || !bytes[1].is_ascii_uppercase() {
+        return Err(ScoutChainError::InvalidInput);
+    }
+
+    Ok(String::from_str(env, core::str::from_utf8(bytes).unwrap()))
+}
+
+/// Normalize a filter input (region or position) for query matching.
+/// Uses the same canonicalization logic but allows empty strings (meaning "no filter").
+fn normalize_filter_region(env: &Env, region: &String) -> Result<String, ScoutChainError> {
+    if region.is_empty() {
+        return Ok(String::from_str(env, ""));
+    }
+    canonicalize_region(env, region)
+}
+
+fn normalize_filter_position(env: &Env, position: &String) -> Result<String, ScoutChainError> {
+    if position.is_empty() {
+        return Ok(String::from_str(env, ""));
+    }
+    canonicalize_position(env, position)
+}
+
 #[contract]
 pub struct RegistrationContract;
 
@@ -315,13 +425,18 @@ impl RegistrationContract {
             return Err(ScoutChainError::InvalidInput);
         }
 
-        // Validate vitals string lengths
+        // Validate vitals string lengths (pre-canonicalization bounds)
         if vitals.position.len() > MAX_STRING_LEN
             || vitals.region.len() > MAX_REGION_LEN
             || vitals.nationality.len() > MAX_STRING_LEN
         {
             return Err(ScoutChainError::InvalidInput);
         }
+
+        // Canonicalize and validate vitals fields
+        let canon_position = canonicalize_position(&env, &vitals.position)?;
+        let canon_region = canonicalize_region(&env, &vitals.region)?;
+        let canon_nationality = canonicalize_nationality(&env, &vitals.nationality)?;
 
         // Validate age upper bound
         if vitals.age > MAX_PLAYER_AGE {
@@ -339,7 +454,12 @@ impl RegistrationContract {
         let profile = StoredPlayerProfile {
             player_id,
             wallet: wallet.clone(),
-            vitals,
+            vitals: PlayerVitals {
+                age: vitals.age,
+                position: canon_position,
+                region: canon_region,
+                nationality: canon_nationality,
+            },
             ipfs_hashes,
             registered_at: now,
             updated_at: now,
@@ -498,9 +618,7 @@ impl RegistrationContract {
         Self::require_initialized(&env)?;
         wallet.require_auth();
 
-        if region.len() > MAX_REGION_LEN {
-            return Err(ScoutChainError::InvalidInput);
-        }
+        let canon_region = canonicalize_region(&env, &region)?;
 
         // Per-caller cooldown: same pattern as register_player.
         Self::enforce_reg_cooldown(&env, &DataKey::ScoutRegLastSent(wallet.clone()))?;
@@ -518,7 +636,7 @@ impl RegistrationContract {
         let profile = ScoutProfile {
             scout_id,
             wallet: wallet.clone(),
-            region,
+            region: canon_region,
             verified: false,
             verification: ScoutVerificationRecord {
                 verified: false,
@@ -579,12 +697,10 @@ impl RegistrationContract {
         if vitals.age == 0 || vitals.age < MIN_PLAYER_AGE {
             return Err(ScoutChainError::InvalidInput);
         }
-        if vitals.position.len() > MAX_STRING_LEN
-            || vitals.region.len() > MAX_REGION_LEN
-            || vitals.nationality.len() > MAX_STRING_LEN
-        {
-            return Err(ScoutChainError::InvalidInput);
-        }
+        let canon_position = canonicalize_position(&env, &vitals.position)?;
+        let canon_region = canonicalize_region(&env, &vitals.region)?;
+        let canon_nationality = canonicalize_nationality(&env, &vitals.nationality)?;
+
         if vitals.age > MAX_PLAYER_AGE {
             return Err(ScoutChainError::InvalidInput);
         }
@@ -595,7 +711,12 @@ impl RegistrationContract {
         let stored = StoredPlayerProfile {
             player_id,
             wallet: wallet.clone(),
-            vitals,
+            vitals: PlayerVitals {
+                age: vitals.age,
+                position: canon_position,
+                region: canon_region,
+                nationality: canon_nationality,
+            },
             ipfs_hashes,
             registered_at,
             updated_at,
@@ -652,14 +773,12 @@ impl RegistrationContract {
             return Err(ScoutChainError::AlreadyRegistered);
         }
 
-        if region.len() > MAX_REGION_LEN {
-            return Err(ScoutChainError::InvalidInput);
-        }
+        let canon_region = canonicalize_region(&env, &region)?;
 
         let profile = ScoutProfile {
             scout_id,
             wallet: wallet.clone(),
-            region,
+            region: canon_region,
             verified,
             verification: ScoutVerificationRecord {
                 verified,
@@ -737,10 +856,22 @@ impl RegistrationContract {
             return Err(ScoutChainError::InvalidInput);
         }
 
+        // Canonicalize vitals before hashing and storing
+        let canon_position = canonicalize_position(&env, &vitals.position)?;
+        let canon_region = canonicalize_region(&env, &vitals.region)?;
+        let canon_nationality = canonicalize_nationality(&env, &vitals.nationality)?;
+
+        let canon_vitals = PlayerVitals {
+            age: vitals.age,
+            position: canon_position,
+            region: canon_region,
+            nationality: canon_nationality,
+        };
+
         let profile_data_hash = Self::profile_data_hash(
             &env,
             &wallet,
-            &vitals,
+            &canon_vitals,
             &ipfs_hashes,
             player_id,
             registered_at,
@@ -762,7 +893,7 @@ impl RegistrationContract {
         let result = Self::admin_seed_player(
             env.clone(),
             wallet.clone(),
-            vitals,
+            canon_vitals,
             ipfs_hashes,
             level,
             player_id,
@@ -821,7 +952,10 @@ impl RegistrationContract {
             return Err(ScoutChainError::InvalidInput);
         }
 
-        let region_hash = Self::region_hash(&env, &region);
+        // Canonicalize region before hashing and storing
+        let canon_region = canonicalize_region(&env, &region)?;
+
+        let region_hash = Self::region_hash(&env, &canon_region);
         if authorization.profile_data_hash != region_hash {
             return Err(ScoutChainError::InvalidInput);
         }
@@ -836,7 +970,7 @@ impl RegistrationContract {
         let result = Self::admin_seed_scout(
             env.clone(),
             wallet.clone(),
-            region,
+            canon_region,
             scout_id,
             registered_at,
             verified,
@@ -1247,9 +1381,13 @@ impl RegistrationContract {
     ) -> Result<FilterResult, ScoutChainError> {
         Self::require_initialized(&env)?;
 
+        // Normalize filter inputs to match canonical stored values
+        let canon_region = normalize_filter_region(&env, &region)?;
+        let canon_position = normalize_filter_position(&env, &position)?;
+
         let max_results = limit.min(50);
-        let region_filter = !region.is_empty();
-        let position_filter = !position.is_empty();
+        let region_filter = !canon_region.is_empty();
+        let position_filter = !canon_position.is_empty();
 
         let levels: [ProgressLevel; 4] = [
             ProgressLevel::Unverified,
@@ -1274,7 +1412,7 @@ impl RegistrationContract {
                     .persistent()
                     .get(&DataKey::PlayersByLevelRegion(
                         level.clone(),
-                        region.clone(),
+                        canon_region.clone(),
                     ))
                     .unwrap_or_else(|| Vec::new(&env));
 
@@ -1289,7 +1427,7 @@ impl RegistrationContract {
                         continue;
                     }
                     if let Ok(profile) = Self::load_player(&env, player_id) {
-                        if position_filter && profile.vitals.position != position {
+                        if position_filter && profile.vitals.position != canon_position {
                             continue;
                         }
                         if skipped < offset {
@@ -1326,7 +1464,7 @@ impl RegistrationContract {
                     if !Self::level_gte(&profile.level, &min_level) {
                         continue;
                     }
-                    if position_filter && profile.vitals.position != position {
+                    if position_filter && profile.vitals.position != canon_position {
                         continue;
                     }
                     if skipped < offset {
