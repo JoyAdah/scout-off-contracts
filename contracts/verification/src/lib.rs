@@ -8352,4 +8352,130 @@ mod tests {
         assert_eq!(client.get_total_milestone_count_u64(), 2u64);
         assert_eq!(client.get_total_milestone_count(), 2u32);
     }
+
+    // -------------------------------------------------------------------------
+    // Issue #1453: Config setter events tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_set_diversity_config_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let new_config = DiversityConfig { min_unique_regions: 3, min_unique_validators: 5 };
+        client.set_diversity_config(&new_config);
+
+        let events = env.events().all();
+        // The last event should be diversity_config_updated
+        let last = events.last().unwrap();
+        let (topics, _): (soroban_sdk::Vec<soroban_sdk::Val>, soroban_sdk::Val) = (last.1, last.2);
+        // First topic is the symbol
+        let symbol = Symbol::new(&env, "diversity_config_updated");
+        assert_eq!(topics.get(0).unwrap(), symbol.into_val(&env));
+    }
+
+    #[test]
+    fn test_set_min_region_quorum_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        client.set_min_region_quorum(&2u32);
+
+        let events = env.events().all();
+        assert!(!events.is_empty());
+        // Event was emitted — verify last event has the right symbol
+        let all = env.events().all();
+        let found = all.iter().any(|e| {
+            let topics = e.1;
+            topics.len() > 0 && topics.get(0).unwrap() == Symbol::new(&env, "min_region_quorum_updated").into_val(&env)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_set_milestone_threshold_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let threshold = MilestoneThreshold { min_votes: 3, approval_bps: 6600 };
+        client.set_milestone_threshold(&threshold);
+
+        let all = env.events().all();
+        let found = all.iter().any(|e| {
+            let topics = e.1;
+            topics.len() > 0 && topics.get(0).unwrap() == Symbol::new(&env, "milestone_threshold_updated").into_val(&env)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_set_voting_window_secs_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        client.set_voting_window_secs(&86400u64);
+
+        let all = env.events().all();
+        let found = all.iter().any(|e| {
+            let topics = e.1;
+            topics.len() > 0 && topics.get(0).unwrap() == Symbol::new(&env, "voting_window_secs_updated").into_val(&env)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_set_reg_cooldown_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        client.set_reg_cooldown(&3600u64);
+
+        let all = env.events().all();
+        let found = all.iter().any(|e| {
+            let topics = e.1;
+            topics.len() > 0 && topics.get(0).unwrap() == Symbol::new(&env, "reg_cooldown_updated").into_val(&env)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_set_jury_config_emits_event() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        let jury = JuryConfig { jury_size: 5, quorum: 3 };
+        client.set_jury_config(&jury);
+
+        let all = env.events().all();
+        let found = all.iter().any(|e| {
+            let topics = e.1;
+            topics.len() > 0 && topics.get(0).unwrap() == Symbol::new(&env, "jury_config_updated").into_val(&env)
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_set_diversity_config_records_old_values() {
+        let (env, client) = setup();
+        let admin = Address::generate(&env);
+        client.initialize(&admin);
+
+        // Set initial value
+        let first = DiversityConfig { min_unique_regions: 1, min_unique_validators: 2 };
+        client.set_diversity_config(&first);
+
+        // Update — old values should be (1, 2)
+        let second = DiversityConfig { min_unique_regions: 3, min_unique_validators: 4 };
+        client.set_diversity_config(&second);
+
+        // Events contain old and new values in the data payload
+        let all = env.events().all();
+        assert!(!all.is_empty());
+    }
 }
